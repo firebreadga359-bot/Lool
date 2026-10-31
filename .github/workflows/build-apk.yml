@@ -1,0 +1,95 @@
+name: Build Quiet Place Bridge APK
+
+# Run it from the Actions tab -> "Build Quiet Place Bridge APK" -> Run workflow,
+# or just push a change under QuietPlaceBridge_Overlay/.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'QuietPlaceBridge_Overlay/**'
+      - '.github/workflows/build-apk.yml'
+      - '*.mcaddon'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile, test, package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: QuietPlaceBridge_Overlay
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK command line tools
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Install Android platform 35 and build tools
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Verify the add-on protocol matches the app
+        run: |
+          set -euo pipefail
+          MC="../QuietPlace_MonsterMic_AudioLevel_v2.mcaddon"
+          JS=$(unzip -Z1 "$MC" | grep 'scripts/sound_maker\.js$' | head -1)
+          unzip -p "$MC" "$JS" > /tmp/sound_maker.js
+          grep -q 'quietplace:mic' /tmp/sound_maker.js
+          grep -q 'level=' /tmp/sound_maker.js
+          grep -q '"speaking"' /tmp/sound_maker.js
+          grep -q '"silent"' /tmp/sound_maker.js
+          echo "Add-on listens for quietplace:mic level=/speaking/silent - protocol OK"
+
+      - name: Compile the app and run the unit tests
+        run: gradle --no-daemon --stacktrace --info :app:assembleDebug :app:testDebugUnitTest
+
+      - name: Show the produced APK
+        run: ls -lR app/build/outputs/apk || true
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuietPlaceBridge-debug-apk
+          path: QuietPlaceBridge_Overlay/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuietPlaceBridge-unit-test-report
+          path: QuietPlaceBridge_Overlay/app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Upload updated add-on (.mcaddon)
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuietPlace-MonsterMic-addon
+          path: QuietPlace_MonsterMic_AudioLevel_v2.mcaddon
+          if-no-files-found: error
+
+      - name: Failure help
+        if: failure()
+        run: |
+          echo "::error::Build failed. Open the failing step above and read its log."
+          echo "The most common causes are: a Kotlin compile error under QuietPlaceBridge_Overlay/app/src,"
+          echo "a missing Android SDK package, or a unit test failure (see the test report artifact)."
